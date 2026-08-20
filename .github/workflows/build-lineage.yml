@@ -187,47 +187,95 @@ jobs:
             exit 1
           fi
 
+      # Android 7.x 用 Jack 编译 Java（8.0 起才换回 javac）。它是个后台服务，
+      # 在 CI 里经常起不来 —— 上一次就是 FAILED: [code=47] setup-jack-server。
+      # 之前把 jack-admin 的输出丢进 /dev/null 且加 || true，等于把原因也丢了。
+      - name: Setup Jack server
+        run: |
+          cd los
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g -Djava.security.egd=file:/dev/./urandom"
+          JA=./prebuilts/sdk/tools/jack-admin
+          echo "--- Jack 服务器初始化 ---" | tee -a "$REPORT"
+          { echo "JAVA_HOME: ${JAVA_HOME:-未设置}"; java -version 2>&1 | head -1; } | tee -a "$REPORT"
+
+          set +e
+          $JA kill-server > /tmp/jack.log 2>&1
+          # 清干净重来，避免残留的证书/端口配置作祟
+          rm -rf ~/.jack-server ~/.jack-settings
+          echo "--- install-server ---" >> /tmp/jack.log
+          $JA install-server prebuilts/sdk/tools/jacks/jack-launcher.jar \
+              prebuilts/sdk/tools/jacks/jack-*.jar >> /tmp/jack.log 2>&1
+          echo "install-server rc=$?" >> /tmp/jack.log
+
+          echo "--- start-server ---" >> /tmp/jack.log
+          $JA start-server >> /tmp/jack.log 2>&1
+          start_rc=$?
+          echo "start-server rc=$start_rc" >> /tmp/jack.log
+          sleep 5
+
+          # 4 核 16GB 上并发编译多个 jack 服务极易 OOM，限制为 1
+          if [ -f ~/.jack-server/config.properties ]; then
+            if grep -q '^jack.server.max-service=' ~/.jack-server/config.properties; then
+              sed -i 's/^jack.server.max-service=.*/jack.server.max-service=1/' ~/.jack-server/config.properties
+            else
+              echo 'jack.server.max-service=1' >> ~/.jack-server/config.properties
+            fi
+            $JA stop-server  >> /tmp/jack.log 2>&1
+            sleep 2
+            $JA start-server >> /tmp/jack.log 2>&1
+            echo "重启后 start-server rc=$?" >> /tmp/jack.log
+            sleep 5
+          fi
+
+          echo "--- list-server ---" >> /tmp/jack.log
+          $JA list-server >> /tmp/jack.log 2>&1
+          list_rc=$?
+          echo "list-server rc=$list_rc" >> /tmp/jack.log
+          set -e
+
+          cat /tmp/jack.log | tee -a "$REPORT"
+          { echo "--- ~/.jack-server 内容 ---"
+            ls -la ~/.jack-server 2>&1 || echo "(目录不存在)"
+            echo "--- config.properties ---"
+            cat ~/.jack-server/config.properties 2>&1 | grep -v -i 'password\|key' || echo "(无)"
+            echo; } | tee -a "$REPORT"
+
+          if [ $list_rc -ne 0 ]; then
+            echo "!! Jack 服务器仍未就绪，将尝试关闭 Jack 改用 javac" | tee -a "$REPORT"
+            echo "JACK_BROKEN=1" >> "$GITHUB_ENV"
+          fi
+
       - name: Build
         run: |
           cd los
           export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
           export USE_CCACHE=1 CCACHE_DIR=~/.ccache
           ccache -M 8G > /dev/null
-          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4096m"
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g -Djava.security.egd=file:/dev/./urandom"
+          # Jack 起不来时退回 javac（Android 7.1 支持该开关）
+          if [ "${JACK_BROKEN:-0}" = "1" ]; then
+            export ANDROID_COMPILE_WITH_JACK=false
+            echo "已设置 ANDROID_COMPILE_WITH_JACK=false" | tee -a "$REPORT"
+          fi
           set +u
           source build/envsetup.sh > /dev/null 2>&1
           lunch lineage_X18-userdebug > /dev/null 2>&1
           set -u
 
-          # 上一次 mka 0 秒返回且退出码 0 却无产物，说明它压根没执行到 make。
-          # 先把环境本身查清楚再动手。
-          { echo "--- 构建前环境诊断 ---"
-            echo "PWD           : $PWD"
-            echo "TARGET_PRODUCT: ${TARGET_PRODUCT:-未设置}"
-            echo "OUT_DIR       : ${OUT_DIR:-未设置}"
-            echo "ANDROID_BUILD_TOP: ${ANDROID_BUILD_TOP:-未设置}"
-            echo "type mka      : $(type mka 2>&1 | head -3)"
-            echo "type m        : $(type m 2>&1 | head -2)"
-            echo "which make    : $(which make 2>&1)  $(make --version 2>&1 | head -1)"
-            echo "which schedtool ionice: $(which schedtool 2>&1) $(which ionice 2>&1)"
-            echo "bacon 目标定义: $(grep -rl 'bacon' vendor/cm/build/tasks/ 2>/dev/null | head -3)"
-            echo; } | tee -a "$REPORT"
-
-          ./prebuilts/sdk/tools/jack-admin kill-server  > /dev/null 2>&1 || true
-          ./prebuilts/sdk/tools/jack-admin start-server > /dev/null 2>&1 || true
-
           TARGET="${{ github.event.inputs.build_target || 'bacon' }}"
           echo "开始构建 target=$TARGET  $(date -u +%H:%M:%S)" | tee -a "$REPORT"
 
-          # 全量捕获输出。直接用 make 而非 mka —— mka 会经 schedtool/ionice/mk_timer
-          # 多层包装，任何一层出问题都会被吞掉，不利于定位。
+          # 直接调 make：mka 经 mk_timer -> schedtool -> ionice 多层包装，
+          # 任何一层异常都会被吞掉，不利于定位。
           set +e
           make -j"$(nproc)" "$TARGET" > /tmp/build.log 2>&1
           rc=$?
           set -e
           echo "make 退出码: $rc  结束 $(date -u +%H:%M:%S)" | tee -a "$REPORT"
-          { echo "--- 构建输出 前 60 行 ---"; head -60 /tmp/build.log
-            echo "--- 构建输出 后 120 行 ---"; tail -120 /tmp/build.log
+          { echo "--- 错误摘要 ---"
+            grep -aE "(^|[^-])error:|^FAILED|^ninja: |^make: \*\*\*|Killed|No space left" /tmp/build.log \
+              | grep -avE "^prebuilts/|clang\+\+|-Werror|-Wno-" | head -40 || echo "(未匹配到错误行)"
+            echo "--- 输出末尾 40 行 ---"; tail -40 /tmp/build.log
             echo "--- 日志总行数: $(wc -l < /tmp/build.log) ---"
             echo; } | tee -a "$REPORT"
           exit $rc
