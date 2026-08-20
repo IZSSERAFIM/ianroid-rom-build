@@ -21,6 +21,10 @@ on:
         description: "构建目标 (bacon / systemimage)"
         required: true
         default: "bacon"
+      allow_missing_deps:
+        description: "开启 ALLOW_MISSING_DEPENDENCIES(会静默剔除模块，通常应保持 0)"
+        required: true
+        default: "0"
   push:
     branches: [main]
     paths:
@@ -357,7 +361,15 @@ jobs:
       - name: Build
         run: |
           cd los
-          export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
+          export LC_ALL=C
+          # 不再无条件设 ALLOW_MISSING_DEPENDENCIES。它会把有缺失依赖的模块
+          # 静默剔除，但引用其生成产物的模块仍保留 —— 上一次就是
+          # org.cyanogenmod.platform-res 未被调度，而依赖它 Manifest.java 的
+          # org.cyanogenmod.platform.internal 照编不误，最终 javac: file not found。
+          if [ "${{ github.event.inputs.allow_missing_deps || '0' }}" = "1" ]; then
+            export ALLOW_MISSING_DEPENDENCIES=true
+            echo "ALLOW_MISSING_DEPENDENCIES=true (显式开启)" | tee -a "$REPORT"
+          fi
           export USE_CCACHE=1 CCACHE_DIR=~/.ccache
           ccache -M 8G > /dev/null
           export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx8g -Djava.security.egd=file:/dev/./urandom"
