@@ -124,24 +124,8 @@ jobs:
           ls -lh "$OUT" 2>/dev/null || echo "(无产物)"
           if [ -f "$OUT/recovery.img" ]; then
             echo "--- recovery.img 校验 ---"
-            stat -c '大小: %s bytes' "$OUT/recovery.img"
             md5sum "$OUT/recovery.img"
-            echo -n "魔数: "; head -c 8 "$OUT/recovery.img"; echo
-            # 确认打包进去的是我们的 prebuilt 内核而不是别的
-            echo -n "内核 banner: "
-            python3 - "$OUT/recovery.img" <<'PY'
-import struct, sys, zlib, re
-d = open(sys.argv[1], 'rb').read()
-ks, ka, rs, ra, ss, sa, tg, ps = struct.unpack_from('<8I', d, 8)
-k = d[ps:ps+ks]
-m = re.search(b'\x1f\x8b\x08', k)
-raw = zlib.decompressobj(16+zlib.MAX_WBITS).decompress(k[m.start():]) if m else k
-b = re.search(rb'Linux version [0-9][^\x00\n]{0,120}', raw)
-print(b.group().decode() if b else '(未找到)')
-print(f"  base=0x{ka-0x8000:08X} kernel=0x{ka:08X} ramdisk=0x{ra:08X} tags=0x{tg:08X} page={ps}")
-for kw in (b'st7703', b'gt1x', b'Goodix'):
-    print(f"  含 {kw.decode():<8}: {kw in raw}")
-PY
+            python3 tools/verify_recovery.py "$OUT/recovery.img"
           fi
           df -h /
 
