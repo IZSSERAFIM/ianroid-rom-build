@@ -229,6 +229,37 @@ jobs:
             curl --version | head -2
             echo; } | tee -a "$REPORT"
 
+      # 探测证实：服务端监听正常，但客户端发出 ClientHello 后被直接断开
+      # （unexpected eof），说明失败发生在服务端 Java 侧而非 OpenSSL 侧。
+      # 原因：Java 8u291+ 在 jdk.tls.disabledAlgorithms 里默认禁用了
+      # TLSv1/TLSv1.1，而 Jack(2016) 的服务端依赖它们。我们用的是 8u502，
+      # 所以服务器能起来能监听，但任何握手都会被 JDK 安全策略掐断。
+      # 这也解释了为何改 OPENSSL_CONF 与 ~/.curlrc 都无效。
+      - name: Relax JDK 8 TLS policy for Jack
+        run: |
+          JS=$(find "$JAVA_HOME" -name java.security -path '*security*' 2>/dev/null | head -1)
+          if [ -z "$JS" ]; then echo "!! 找不到 java.security" | tee -a "$REPORT"; exit 1; fi
+          cp "$JS" "$JS.bak"
+          # 属性值可能以反斜杠跨多行，用 python 整体替换而非 sed 单行替换
+          python3 - "$JS" <<'PYEOF'
+          import re, sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8', errors='replace').read()
+          for key, val in (
+              ('jdk.tls.disabledAlgorithms', 'SSLv3, RC4, DES, MD5withRSA, NULL, EXPORT'),
+              ('jdk.certpath.disabledAlgorithms', 'MD2, MD5'),
+              ('jdk.tls.legacyAlgorithms', ''),
+          ):
+              s = re.sub(r'^' + re.escape(key) + r'=(?:.*\\\n)*.*$',
+                         key + '=' + val, s, flags=re.M)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('已重写:', p)
+          PYEOF
+          { echo "--- JDK TLS 策略 ---"
+            echo "文件: $JS"
+            grep -E '^jdk\.(tls|certpath)\.(disabled|legacy)Algorithms' "$JS"
+            echo; } | tee -a "$REPORT"
+
       # Android 7.x 用 Jack 编译 Java（8.0 起才换回 javac）。它是个后台服务，
       # 在 CI 里经常起不来 —— 上一次就是 FAILED: [code=47] setup-jack-server。
       # 之前把 jack-admin 的输出丢进 /dev/null 且加 || true，等于把原因也丢了。
