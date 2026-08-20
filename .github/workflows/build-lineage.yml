@@ -266,7 +266,7 @@ jobs:
       - name: Setup Jack server
         run: |
           cd los
-          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g -Djava.security.egd=file:/dev/./urandom"
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx8g -Djava.security.egd=file:/dev/./urandom"
           JA=./prebuilts/sdk/tools/jack-admin
           echo "--- Jack 服务器初始化 ---" | tee -a "$REPORT"
           { echo "JAVA_HOME: ${JAVA_HOME:-未设置}"; java -version 2>&1 | head -1; } | tee -a "$REPORT"
@@ -302,9 +302,9 @@ jobs:
           # 4 核 16GB 上并发编译多个 jack 服务极易 OOM，限制为 1
           if [ -f ~/.jack-server/config.properties ]; then
             if grep -q '^jack.server.max-service=' ~/.jack-server/config.properties; then
-              sed -i 's/^jack.server.max-service=.*/jack.server.max-service=1/' ~/.jack-server/config.properties
+              sed -i 's/^jack.server.max-service=.*/jack.server.max-service=2/' ~/.jack-server/config.properties
             else
-              echo 'jack.server.max-service=1' >> ~/.jack-server/config.properties
+              echo 'jack.server.max-service=2' >> ~/.jack-server/config.properties
             fi
             $JA stop-server  >> /tmp/jack.log 2>&1
             sleep 2
@@ -360,7 +360,7 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
           export USE_CCACHE=1 CCACHE_DIR=~/.ccache
           ccache -M 8G > /dev/null
-          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g -Djava.security.egd=file:/dev/./urandom"
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx8g -Djava.security.egd=file:/dev/./urandom"
           set +u
           source build/envsetup.sh > /dev/null 2>&1
           lunch lineage_X18-userdebug > /dev/null 2>&1
@@ -401,14 +401,18 @@ jobs:
               | grep -avE "^prebuilts/|clang\+\+|-Werror|-Wno-" | head -30 || echo "(无)"
             echo "--- FAILED 前后各 15 行 ---"
             grep -an "^FAILED" /tmp/build.log | head -3 | cut -d: -f1 | while read -r n; do
-              sed -n "$((n>15?n-15:1)),$((n+15))p" /tmp/build.log
+              sed -n "$((n>10?n-10:1)),$((n+60))p" /tmp/build.log
               echo "  ......"
             done
             echo "--- Jack 服务端日志 ---"
             $JA server-log 2>&1 | tail -40 || echo "(取不到)"
             ls -la ~/.jack-server/logs/ 2>/dev/null | head -10 || true
+            # 服务端日志很大(百KB级)，直接挑错误行；模块编译失败的真因在这里
+            echo "--- Jack 日志中的错误 ---"
+            grep -ahE 'SEVERE|ERROR|OutOfMemory|GC overhead|Exception|Internal compiler' \
+              ~/.jack-server/logs/*.log 2>/dev/null | tail -30 || echo "(无错误行)"
             for f in ~/.jack-server/logs/*.log; do
-              [ -f "$f" ] && { echo "== $f =="; tail -25 "$f"; }
+              [ -f "$f" ] && { echo "== $f 末尾 =="; tail -15 "$f"; }
             done 2>/dev/null || true
             echo "--- Jack 存活检查 ---"
             $JA list-server 2>&1 | head -5 || echo "(服务器已死)"
