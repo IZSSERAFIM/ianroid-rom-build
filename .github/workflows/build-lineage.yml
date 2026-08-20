@@ -202,9 +202,22 @@ jobs:
           $JA kill-server > /tmp/jack.log 2>&1
           # 清干净重来，避免残留的证书/端口配置作祟
           rm -rf ~/.jack-server ~/.jack-settings
+
+          # install-server 只接受恰好两个参数：<launcher.jar> <server.jar>。
+          # 上一次用通配符匹配到多个 jar（还含 launcher 自身）导致用法错误 rc=255。
+          # launcher 在 prebuilts/sdk/tools/ 下，server jar 才在 jacks/ 子目录里。
+          { echo "--- 可用的 jack jar ---"
+            find prebuilts/sdk/tools -maxdepth 2 -name 'jack*.jar' -printf '%p  %s bytes\n' 2>/dev/null
+          } >> /tmp/jack.log 2>&1
+
+          LAUNCHER=$(find prebuilts/sdk/tools -maxdepth 2 -name 'jack-launcher.jar' | head -1)
+          SERVER=$(find prebuilts/sdk/tools -maxdepth 2 -name 'jack*.jar' \
+                     ! -name 'jack-launcher.jar' | sort -V | tail -1)
+          echo "launcher = ${LAUNCHER:-未找到}" >> /tmp/jack.log
+          echo "server   = ${SERVER:-未找到}"   >> /tmp/jack.log
+
           echo "--- install-server ---" >> /tmp/jack.log
-          $JA install-server prebuilts/sdk/tools/jacks/jack-launcher.jar \
-              prebuilts/sdk/tools/jacks/jack-*.jar >> /tmp/jack.log 2>&1
+          $JA install-server "$LAUNCHER" "$SERVER" >> /tmp/jack.log 2>&1
           echo "install-server rc=$?" >> /tmp/jack.log
 
           echo "--- start-server ---" >> /tmp/jack.log
@@ -241,8 +254,11 @@ jobs:
             echo; } | tee -a "$REPORT"
 
           if [ $list_rc -ne 0 ]; then
-            echo "!! Jack 服务器仍未就绪，将尝试关闭 Jack 改用 javac" | tee -a "$REPORT"
-            echo "JACK_BROKEN=1" >> "$GITHUB_ENV"
+            echo "!! Jack 服务器未就绪，构建无法继续。" | tee -a "$REPORT"
+            # 实测 ANDROID_COMPILE_WITH_JACK=false 在这棵树上不可用：
+            # 退回 javac 后 ninja 会报 with-local/classes.dex missing and no
+            # known rule（javac 路径未生成对应规则），所以不再做这个回退。
+            exit 1
           fi
 
       - name: Build
@@ -252,11 +268,6 @@ jobs:
           export USE_CCACHE=1 CCACHE_DIR=~/.ccache
           ccache -M 8G > /dev/null
           export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g -Djava.security.egd=file:/dev/./urandom"
-          # Jack 起不来时退回 javac（Android 7.1 支持该开关）
-          if [ "${JACK_BROKEN:-0}" = "1" ]; then
-            export ANDROID_COMPILE_WITH_JACK=false
-            echo "已设置 ANDROID_COMPILE_WITH_JACK=false" | tee -a "$REPORT"
-          fi
           set +u
           source build/envsetup.sh > /dev/null 2>&1
           lunch lineage_X18-userdebug > /dev/null 2>&1
