@@ -1,0 +1,8 @@
+# 这些文件要在 Linux 上被 make / bash 解析，必须保持 LF。
+# Windows 端 core.autocrlf=true 时若不锁定，混入 CR 会导致构建失败。
+*.mk        text eol=lf
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.fstab     text eol=lf
+Android.mk  text eol=lf
+kernel      binary
