@@ -33,6 +33,8 @@ jobs:
     # push 事件下 inputs 为空，回落到默认值
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 350
+    permissions:
+      contents: write   # 发布 Release 需要
 
     steps:
       - name: Checkout
@@ -117,8 +119,30 @@ jobs:
       - name: Show output
         if: always()
         run: |
+          OUT=twrp/out/target/product/ios6737t
           echo "--- out 产物 ---"
-          ls -lh twrp/out/target/product/ios6737t/ 2>/dev/null || echo "(无产物)"
+          ls -lh "$OUT" 2>/dev/null || echo "(无产物)"
+          if [ -f "$OUT/recovery.img" ]; then
+            echo "--- recovery.img 校验 ---"
+            stat -c '大小: %s bytes' "$OUT/recovery.img"
+            md5sum "$OUT/recovery.img"
+            echo -n "魔数: "; head -c 8 "$OUT/recovery.img"; echo
+            # 确认打包进去的是我们的 prebuilt 内核而不是别的
+            echo -n "内核 banner: "
+            python3 - "$OUT/recovery.img" <<'PY'
+import struct, sys, zlib, re
+d = open(sys.argv[1], 'rb').read()
+ks, ka, rs, ra, ss, sa, tg, ps = struct.unpack_from('<8I', d, 8)
+k = d[ps:ps+ks]
+m = re.search(b'\x1f\x8b\x08', k)
+raw = zlib.decompressobj(16+zlib.MAX_WBITS).decompress(k[m.start():]) if m else k
+b = re.search(rb'Linux version [0-9][^\x00\n]{0,120}', raw)
+print(b.group().decode() if b else '(未找到)')
+print(f"  base=0x{ka-0x8000:08X} kernel=0x{ka:08X} ramdisk=0x{ra:08X} tags=0x{tg:08X} page={ps}")
+for kw in (b'st7703', b'gt1x', b'Goodix'):
+    print(f"  含 {kw.decode():<8}: {kw in raw}")
+PY
+          fi
           df -h /
 
       - name: Upload recovery.img
@@ -128,6 +152,27 @@ jobs:
           name: twrp-ios6737t-recovery
           path: twrp/out/target/product/ios6737t/recovery.img
           if-no-files-found: error
+
+      # 同时发布 Release —— artifacts 下载需要认证，Release 资产则可公开直链下载
+      - name: Publish release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: twrp-build-${{ github.run_number }}
+          name: TWRP for ios6737t (build ${{ github.run_number }})
+          files: twrp/out/target/product/ios6737t/recovery.img
+          body: |
+            TWRP recovery，为 MT6737T 机型 `ios6737t_36_a_n` 构建。
+
+            - 内核：本机 stock prebuilt（含 `st7703` 屏驱动 + `gt1x` 触摸驱动）
+            - `TW_ROTATION := 180`，用于修正物理倒装屏
+            - fstab 依据本机实测 by-name 分区表生成，`/data` 无 forceencrypt
+
+            **刷入前务必先试运行，不要直接写分区：**
+            ```
+            fastboot boot recovery.img
+            ```
+            确认显示方向与触摸正常后，再考虑 `fastboot flash recovery`。
 
       # 失败时把构建日志带出来，便于定位（完整 out 目录太大，只取日志）
       - name: Upload build logs on failure
