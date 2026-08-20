@@ -1,0 +1,131 @@
+name: Build TWRP (ios6737t / MT6737T)
+
+# Android 7.1 时代的构建对环境很挑：需要 JDK 8 与 Python 2，两者在新版
+# Ubuntu runner 上都不是默认可用。这里用 setup-java 提供 JDK 8，
+# 用 universe 源里的 python2 提供 Python 2。
+# 若某天该 runner 标签被 GitHub 下线，改 inputs.runner 即可。
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner 标签"
+        required: true
+        default: "ubuntu-22.04"
+      manifest_branch:
+        description: "TWRP manifest 分支"
+        required: true
+        default: "twrp-7.1"
+
+jobs:
+  build:
+    name: Build recovery
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # AOSP 源码 + out 目录约需 40GB，runner 默认只有约 29GB 可用，
+      # 必须先腾出预装的 Android SDK / .NET / GHC / CodeQL 等。
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Report disk after cleanup
+        run: df -h /
+
+      - name: Setup JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev python2 python3 openssl \
+            libelf-dev device-tree-compiler
+          # AOSP 7.1 的构建脚本调用 `python` 时期望的是 Python 2
+          sudo ln -sf /usr/bin/python2 /usr/local/bin/python
+          python --version
+
+      - name: Install repo
+        run: |
+          mkdir -p ~/bin
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Sync TWRP minimal manifest
+        run: |
+          git config --global user.name  "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+          mkdir -p twrp && cd twrp
+          repo init --depth=1 --no-repo-verify \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git \
+            -b ${{ github.event.inputs.manifest_branch }}
+          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune
+
+      - name: Report disk after sync
+        run: df -h / && du -sh twrp
+
+      - name: Install device tree
+        run: |
+          mkdir -p twrp/device/ianroid/ios6737t
+          cp -v device/* twrp/device/ianroid/ios6737t/
+          echo "--- 设备树内容 ---"
+          ls -l twrp/device/ianroid/ios6737t/
+
+      - name: Build recoveryimage
+        run: |
+          cd twrp
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          set +u
+          source build/envsetup.sh
+          lunch omni_ios6737t-eng
+          set -u
+          mka recoveryimage -j"$(nproc)"
+
+      - name: Show output
+        if: always()
+        run: |
+          echo "--- out 产物 ---"
+          ls -lh twrp/out/target/product/ios6737t/ 2>/dev/null || echo "(无产物)"
+          df -h /
+
+      - name: Upload recovery.img
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twrp-ios6737t-recovery
+          path: twrp/out/target/product/ios6737t/recovery.img
+          if-no-files-found: error
+
+      # 失败时把构建日志带出来，便于定位（完整 out 目录太大，只取日志）
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            twrp/out/**/*.log
+            twrp/out/verbose.log.gz
+          if-no-files-found: ignore
+          retention-days: 7

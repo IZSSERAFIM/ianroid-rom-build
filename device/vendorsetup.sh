@@ -1,0 +1,2 @@
+add_lunch_combo omni_ios6737t-eng
+add_lunch_combo omni_ios6737t-userdebug
