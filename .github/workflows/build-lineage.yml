@@ -198,10 +198,39 @@ jobs:
           source build/envsetup.sh > /dev/null 2>&1
           lunch lineage_X18-userdebug > /dev/null 2>&1
           set -u
+
+          # 上一次 mka 0 秒返回且退出码 0 却无产物，说明它压根没执行到 make。
+          # 先把环境本身查清楚再动手。
+          { echo "--- 构建前环境诊断 ---"
+            echo "PWD           : $PWD"
+            echo "TARGET_PRODUCT: ${TARGET_PRODUCT:-未设置}"
+            echo "OUT_DIR       : ${OUT_DIR:-未设置}"
+            echo "ANDROID_BUILD_TOP: ${ANDROID_BUILD_TOP:-未设置}"
+            echo "type mka      : $(type mka 2>&1 | head -3)"
+            echo "type m        : $(type m 2>&1 | head -2)"
+            echo "which make    : $(which make 2>&1)  $(make --version 2>&1 | head -1)"
+            echo "which schedtool ionice: $(which schedtool 2>&1) $(which ionice 2>&1)"
+            echo "bacon 目标定义: $(grep -rl 'bacon' vendor/cm/build/tasks/ 2>/dev/null | head -3)"
+            echo; } | tee -a "$REPORT"
+
           ./prebuilts/sdk/tools/jack-admin kill-server  > /dev/null 2>&1 || true
           ./prebuilts/sdk/tools/jack-admin start-server > /dev/null 2>&1 || true
-          echo "开始构建 $(date -u +%H:%M:%S)" | tee -a "$REPORT"
-          mka ${{ github.event.inputs.build_target || 'bacon' }} -j"$(nproc)"
+
+          TARGET="${{ github.event.inputs.build_target || 'bacon' }}"
+          echo "开始构建 target=$TARGET  $(date -u +%H:%M:%S)" | tee -a "$REPORT"
+
+          # 全量捕获输出。直接用 make 而非 mka —— mka 会经 schedtool/ionice/mk_timer
+          # 多层包装，任何一层出问题都会被吞掉，不利于定位。
+          set +e
+          make -j"$(nproc)" "$TARGET" > /tmp/build.log 2>&1
+          rc=$?
+          set -e
+          echo "make 退出码: $rc  结束 $(date -u +%H:%M:%S)" | tee -a "$REPORT"
+          { echo "--- 构建输出 前 60 行 ---"; head -60 /tmp/build.log
+            echo "--- 构建输出 后 120 行 ---"; tail -120 /tmp/build.log
+            echo "--- 日志总行数: $(wc -l < /tmp/build.log) ---"
+            echo; } | tee -a "$REPORT"
+          exit $rc
 
       - name: Collect results
         if: always()
