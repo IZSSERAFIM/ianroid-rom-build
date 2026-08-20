@@ -22,6 +22,22 @@ APPLY_TELEPHONY="${APPLY_TELEPHONY:-0}"
 say() { printf '  %-46s %s\n' "$1" "$2"; }
 echo "=== 适配 X18 设备树 -> ios6737t ==="
 
+# ---------------------------------------------------- AndroidProducts.mk
+# 上游这棵树没有 AndroidProducts.mk，只有 vendorsetup.sh 的 add_lunch_combo。
+# 但 build/core/product_config.mk 是靠扫描 device/*/*/AndroidProducts.mk
+# 来定位产品定义的，缺了它 `lunch lineage_X18-*` 会找不到产品。
+if [ ! -f "$DEV/AndroidProducts.mk" ]; then
+    cat > "$DEV/AndroidProducts.mk" <<'EOF'
+# 由 apply-overrides.sh 补齐：上游设备树缺失此文件，
+# 导致 lunch 无法定位 lineage_X18 产品定义。
+PRODUCT_MAKEFILES := \
+    $(LOCAL_DIR)/lineage.mk
+EOF
+    say "AndroidProducts.mk" "上游缺失，已补齐"
+else
+    say "AndroidProducts.mk" "上游已有，保持不变"
+fi
+
 # ---------------------------------------------------------------- 内核
 # 厂商从未公开内核源码，只能用从本机 recovery 分区抽出的 prebuilt。
 # 它含本机专属的 st7703 屏驱动与 gt1x 触摸驱动，是 X18 内核不具备的。

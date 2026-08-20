@@ -1,7 +1,10 @@
 name: Build LineageOS 14.1 (ios6737t / MT6737T)
 
-# 相比 TWRP，这里源码大一个数量级（cm-14.1 全量约 25GB），
-# 编译时间也长得多。ccache 存进 GitHub Cache 以便超时后续跑能接上。
+# 相比 TWRP，源码大一个数量级（cm-14.1 全量约 15-25GB），编译时间也长得多。
+#
+# 关于诊断：Actions 的日志与 artifacts 都需要认证才能下载，而 Release 资产
+# 是公开直链。所以这里把关键诊断写进 build-report.txt，并在 always() 时
+# 作为 Release 资产发布 —— 无论成败都能拿到现场信息。
 
 on:
   workflow_dispatch:
@@ -11,14 +14,13 @@ on:
         required: true
         default: "ubuntu-22.04"
       apply_telephony:
-        description: "是否套用本机国行双基带电话配置(需搭配本机 blobs，否则 RIL 可能崩)"
+        description: "套用本机国行双基带电话配置(需搭配本机 blobs，否则 RIL 可能崩)"
         required: true
         default: "0"
       build_target:
-        description: "构建目标 (bacon=完整刷机zip, systemimage=仅 system)"
+        description: "构建目标 (bacon / systemimage)"
         required: true
         default: "bacon"
-  # 适配脚本或本 workflow 变更时自动重建
   push:
     branches: [main]
     paths:
@@ -33,11 +35,33 @@ jobs:
     permissions:
       contents: write
 
+    # 关键：默认 shell 加上 pipefail。
+    # 上一次构建之所以"成功"却无产物，就是因为 `cmd | tail` 的退出码取自 tail，
+    # 脚本失败被完全掩盖。
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+
+    env:
+      REPORT: ${{ github.workspace }}/build-report.txt
+
     steps:
       - name: Checkout overrides
         uses: actions/checkout@v4
         with:
           path: own
+
+      - name: Init report
+        run: |
+          {
+            echo "===== LineageOS 14.1 构建报告 ====="
+            echo "run_number : ${{ github.run_number }}"
+            echo "commit     : ${{ github.sha }}"
+            echo "runner     : ${{ github.event.inputs.runner || 'ubuntu-22.04' }}"
+            echo "target     : ${{ github.event.inputs.build_target || 'bacon' }}"
+            echo "telephony  : ${{ github.event.inputs.apply_telephony || '0' }}"
+            echo
+          } | tee "$REPORT"
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
@@ -49,9 +73,6 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
-
-      - name: Report disk
-        run: df -h /
 
       - name: Setup JDK 8
         uses: actions/setup-java@v4
@@ -69,9 +90,10 @@ jobs:
             libssl-dev libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush \
             rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python2 \
             python3 openssl libelf-dev
-          # AOSP 7.1 的构建脚本调用 `python` 时期望 Python 2
           sudo ln -sf /usr/bin/python2 /usr/local/bin/python
-          python --version
+          { echo "--- 环境 ---"; python --version 2>&1; java -version 2>&1;
+            echo "nproc=$(nproc)  mem=$(free -g | awk '/Mem:/{print $2}')GB";
+            df -h / | tail -1; echo; } | tee -a "$REPORT"
 
       - name: Install repo
         run: |
@@ -80,7 +102,6 @@ jobs:
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      # ccache 对 C/C++ 有效（对 Java/Jack 无效）。超时重跑时能省下可观时间。
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -98,9 +119,13 @@ jobs:
             -u https://github.com/LineageOS/android.git -b cm-14.1
           repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags \
             --optimized-fetch --prune
-
-      - name: Report disk after sync
-        run: df -h / && du -sh los
+          { echo "--- sync 结果 ---"
+            echo "源码大小: $(du -sh . | cut -f1)"
+            echo "顶层目录: $(ls | tr '\n' ' ')"
+            for d in build vendor/cm frameworks/base system/core prebuilts/sdk/tools; do
+              [ -d "$d" ] && echo "  存在 $d" || echo "  !! 缺失 $d"
+            done
+            echo; } | tee -a "$REPORT"
 
       - name: Clone device and vendor trees
         run: |
@@ -109,93 +134,114 @@ jobs:
             -b los-14.1 device/CUBOT/X18
           git clone --depth=1 https://github.com/seluce/android_vendor_cubot_x18 \
             -b los-14.1 vendor/CUBOT/X18
-          echo "device tree:"; ls device/CUBOT/X18 | head -20
-          echo "vendor blobs: $(find vendor/CUBOT/X18 -type f | wc -l) 个文件, $(du -sh vendor/CUBOT/X18 | cut -f1)"
+          { echo "--- 设备树与 blobs ---"
+            echo "device 文件: $(ls device/CUBOT/X18 | tr '\n' ' ')"
+            echo "vendor blobs: $(find vendor/CUBOT/X18 -type f | wc -l) 个, $(du -sh vendor/CUBOT/X18 | cut -f1)"
+            echo; } | tee -a "$REPORT"
 
-      # 让 LineageOS 14.1 跑在 MTK 上所需的补丁（frameworks_base/av/native、
-      # system_core、system_netd、wpa_supplicant、Settings 共 7 棵树）
-      - name: Apply MTK patches to LineageOS source
+      - name: Apply MTK patches
         run: |
           cd los/device/CUBOT/X18/patches
           chmod +x apply-patches.sh
-          ./apply-patches.sh 2>&1 | tail -40
+          echo "--- apply-patches.sh 输出 ---" | tee -a "$REPORT"
+          # 不再用管道掩盖退出码；即便失败也要把输出留下再决定是否中止
+          set +e
+          ./apply-patches.sh > /tmp/patch.log 2>&1
+          rc=$?
+          set -e
+          tail -60 /tmp/patch.log | tee -a "$REPORT"
+          echo "apply-patches.sh 退出码: $rc" | tee -a "$REPORT"
+          echo | tee -a "$REPORT"
+          [ $rc -eq 0 ] || echo "!! 补丁未完全成功，继续尝试构建以观察实际影响" | tee -a "$REPORT"
 
       - name: Apply our device overrides
         env:
           APPLY_TELEPHONY: ${{ github.event.inputs.apply_telephony || '0' }}
         run: |
           chmod +x own/lineage/apply-overrides.sh
-          ./own/lineage/apply-overrides.sh "$PWD/los" "$PWD/own"
+          echo "--- 本机适配 ---" | tee -a "$REPORT"
+          ./own/lineage/apply-overrides.sh "$PWD/los" "$PWD/own" 2>&1 | tee -a "$REPORT"
+          echo | tee -a "$REPORT"
+
+      # 单独一步验证 lunch 能否解析产品 —— 上次疑似死在这里
+      - name: Verify lunch target
+        run: |
+          cd los
+          export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
+          set +u
+          source build/envsetup.sh > /tmp/envsetup.log 2>&1
+          echo "--- envsetup ---" | tee -a "$REPORT"
+          tail -20 /tmp/envsetup.log | tee -a "$REPORT"
+          echo "--- 产品发现 ---" | tee -a "$REPORT"
+          ls -l device/CUBOT/X18/AndroidProducts.mk | tee -a "$REPORT"
+          set +e
+          lunch lineage_X18-userdebug > /tmp/lunch.log 2>&1
+          rc=$?
+          set -e
+          set -u
+          echo "lunch 退出码: $rc" | tee -a "$REPORT"
+          tail -30 /tmp/lunch.log | tee -a "$REPORT"
+          echo | tee -a "$REPORT"
+          if [ $rc -ne 0 ]; then
+            echo "!! lunch 失败，无法继续构建" | tee -a "$REPORT"
+            exit 1
+          fi
 
       - name: Build
         run: |
           cd los
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export LC_ALL=C
-          export USE_CCACHE=1
-          export CCACHE_DIR=~/.ccache
-          ccache -M 8G
-          # Android 7.x 用 Jack 编译 Java，内存消耗大，需显式给堆
+          export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
+          export USE_CCACHE=1 CCACHE_DIR=~/.ccache
+          ccache -M 8G > /dev/null
           export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4096m"
           set +u
-          source build/envsetup.sh
-          lunch lineage_X18-userdebug
+          source build/envsetup.sh > /dev/null 2>&1
+          lunch lineage_X18-userdebug > /dev/null 2>&1
           set -u
-          ./prebuilts/sdk/tools/jack-admin kill-server || true
-          ./prebuilts/sdk/tools/jack-admin start-server || true
+          ./prebuilts/sdk/tools/jack-admin kill-server  > /dev/null 2>&1 || true
+          ./prebuilts/sdk/tools/jack-admin start-server > /dev/null 2>&1 || true
+          echo "开始构建 $(date -u +%H:%M:%S)" | tee -a "$REPORT"
           mka ${{ github.event.inputs.build_target || 'bacon' }} -j"$(nproc)"
 
-      - name: Show output
+      - name: Collect results
         if: always()
         run: |
           OUT=los/out/target/product/X18
-          echo "--- 产物 ---"
-          ls -lh "$OUT"/*.zip "$OUT"/*.img 2>/dev/null || echo "(无产物)"
+          { echo "--- 产物 ---"
+            if [ -d "$OUT" ]; then
+              ls -lh "$OUT" 2>/dev/null | head -30
+            else
+              echo "!! $OUT 不存在 —— 构建未产出任何东西"
+            fi
+            echo
+            echo "--- 磁盘 ---"; df -h / | tail -1
+            echo "--- ccache ---"; ccache -s 2>/dev/null | head -6 || true
+          } | tee -a "$REPORT"
           if [ -f "$OUT/boot.img" ]; then
-            echo "--- boot.img 校验（确认用的是本机 prebuilt 内核）---"
-            python3 own/tools/verify_recovery.py "$OUT/boot.img" || true
+            echo "--- boot.img 内核校验 ---" | tee -a "$REPORT"
+            python3 own/tools/verify_recovery.py "$OUT/boot.img" 2>&1 | tee -a "$REPORT" || true
           fi
-          ccache -s | head -8 || true
-          df -h /
 
-      - name: Publish release
-        if: success()
+      # 无论成败都发布，这样读不到日志也能拿到诊断
+      - name: Publish report and artifacts
+        if: always()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: los141-build-${{ github.run_number }}
           name: LineageOS 14.1 for ios6737t (build ${{ github.run_number }})
           files: |
+            build-report.txt
             los/out/target/product/X18/*.zip
             los/out/target/product/X18/boot.img
             los/out/target/product/X18/system.img
           fail_on_unmatched_files: false
           body: |
             LineageOS 14.1 (Android 7.1)，为 MT6737T 机型 `ios6737t_36_a_n` 构建。
+            基于 [seluce/android_device_cubot_x18](https://github.com/seluce/android_device_cubot_x18)。
 
-            基于 [seluce/android_device_cubot_x18](https://github.com/seluce/android_device_cubot_x18)
-            （同为 MT6737T / kernel 3.18.35 / 32bit / density 320），叠加本机适配：
+            **构建结论: ${{ job.status }}** —— 详见 `build-report.txt`。
 
-            - 内核换成本机 prebuilt（含 `st7703` 屏驱动 + `gt1x` 触摸驱动）
-            - `ro.sf.hwrotation=180`（本机屏幕物理倒装）
-            - 分辨率 720x1498、system 分区 2625634304、本机实测 recovery.fstab
-            - OTA assert 追加本机机型名
-
-            **本次电话配置: `APPLY_TELEPHONY=${{ github.event.inputs.apply_telephony || '0' }}`**
-
-            ⚠️ 已知限制：vendor blobs 目前取自 Cubot X18。其 modem 固件是
-            `modem_1_lwg_n.img`（LTE/WCDMA/GSM，**无 C2K**），而本机是国行双基带
-            （MD1 + MD3/CDMA）。因此**通话与移动数据预期不可用**；相机传感器型号
-            也不同（本机 S5K3H2YX + OV5670），相机预期异常。这些需换用本机 blobs 修复。
-
-            刷入前请务必先用 TWRP 做完整备份。
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: los-build-logs
-          path: |
-            los/out/*.log
-            los/out/**/*.log
-          if-no-files-found: ignore
-          retention-days: 7
+            ⚠️ vendor blobs 目前取自 Cubot X18，其 modem 固件为 `modem_1_lwg_n.img`
+            （LTE/WCDMA/GSM，无 C2K），而本机是国行双基带（MD1 + MD3/CDMA）。
+            **通话与移动数据预期不可用**；相机传感器型号也不同，预期异常。
+            这些需换用本机 blobs 修复。刷入前务必先用 TWRP 完整备份。
