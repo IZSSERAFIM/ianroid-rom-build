@@ -6,6 +6,7 @@ name: Build TWRP (ios6737t / MT6737T)
 # 若某天该 runner 标签被 GitHub 下线，改 inputs.runner 即可。
 
 on:
+  # 手动触发，可指定 runner 与 manifest 分支
   workflow_dispatch:
     inputs:
       runner:
@@ -16,11 +17,21 @@ on:
         description: "TWRP manifest 分支"
         required: true
         default: "twrp-7.1"
+  # 设备树或 workflow 变更时自动重建（其他文件如 README 改动不会触发）
+  push:
+    branches: [main]
+    paths:
+      - "device/**"
+      - ".github/workflows/build-twrp.yml"
+
+env:
+  DEFAULT_MANIFEST_BRANCH: twrp-7.1
 
 jobs:
   build:
     name: Build recovery
-    runs-on: ${{ github.event.inputs.runner }}
+    # push 事件下 inputs 为空，回落到默认值
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 350
 
     steps:
@@ -78,7 +89,7 @@ jobs:
           mkdir -p twrp && cd twrp
           repo init --depth=1 --no-repo-verify \
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git \
-            -b ${{ github.event.inputs.manifest_branch }}
+            -b "${{ github.event.inputs.manifest_branch || env.DEFAULT_MANIFEST_BRANCH }}"
           repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags \
             --optimized-fetch --prune
 
