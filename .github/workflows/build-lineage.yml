@@ -1,0 +1,201 @@
+name: Build LineageOS 14.1 (ios6737t / MT6737T)
+
+# 相比 TWRP，这里源码大一个数量级（cm-14.1 全量约 25GB），
+# 编译时间也长得多。ccache 存进 GitHub Cache 以便超时后续跑能接上。
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner 标签"
+        required: true
+        default: "ubuntu-22.04"
+      apply_telephony:
+        description: "是否套用本机国行双基带电话配置(需搭配本机 blobs，否则 RIL 可能崩)"
+        required: true
+        default: "0"
+      build_target:
+        description: "构建目标 (bacon=完整刷机zip, systemimage=仅 system)"
+        required: true
+        default: "bacon"
+  # 适配脚本或本 workflow 变更时自动重建
+  push:
+    branches: [main]
+    paths:
+      - "lineage/**"
+      - ".github/workflows/build-lineage.yml"
+
+jobs:
+  build:
+    name: Build LineageOS 14.1
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
+    timeout-minutes: 355
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout overrides
+        uses: actions/checkout@v4
+        with:
+          path: own
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Report disk
+        run: df -h /
+
+      - name: Setup JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev \
+            libssl-dev libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush \
+            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python2 \
+            python3 openssl libelf-dev
+          # AOSP 7.1 的构建脚本调用 `python` 时期望 Python 2
+          sudo ln -sf /usr/bin/python2 /usr/local/bin/python
+          python --version
+
+      - name: Install repo
+        run: |
+          mkdir -p ~/bin
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # ccache 对 C/C++ 有效（对 Java/Jack 无效）。超时重跑时能省下可观时间。
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-los141-${{ github.run_number }}
+          restore-keys: ccache-los141-
+
+      - name: Sync LineageOS cm-14.1
+        run: |
+          git config --global user.name  "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+          mkdir -p los && cd los
+          repo init --depth=1 --no-repo-verify \
+            -u https://github.com/LineageOS/android.git -b cm-14.1
+          repo sync -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune
+
+      - name: Report disk after sync
+        run: df -h / && du -sh los
+
+      - name: Clone device and vendor trees
+        run: |
+          cd los
+          git clone --depth=1 https://github.com/seluce/android_device_cubot_x18 \
+            -b los-14.1 device/CUBOT/X18
+          git clone --depth=1 https://github.com/seluce/android_vendor_cubot_x18 \
+            -b los-14.1 vendor/CUBOT/X18
+          echo "device tree:"; ls device/CUBOT/X18 | head -20
+          echo "vendor blobs: $(find vendor/CUBOT/X18 -type f | wc -l) 个文件, $(du -sh vendor/CUBOT/X18 | cut -f1)"
+
+      # 让 LineageOS 14.1 跑在 MTK 上所需的补丁（frameworks_base/av/native、
+      # system_core、system_netd、wpa_supplicant、Settings 共 7 棵树）
+      - name: Apply MTK patches to LineageOS source
+        run: |
+          cd los/device/CUBOT/X18/patches
+          chmod +x apply-patches.sh
+          ./apply-patches.sh 2>&1 | tail -40
+
+      - name: Apply our device overrides
+        env:
+          APPLY_TELEPHONY: ${{ github.event.inputs.apply_telephony || '0' }}
+        run: |
+          chmod +x own/lineage/apply-overrides.sh
+          ./own/lineage/apply-overrides.sh "$PWD/los" "$PWD/own"
+
+      - name: Build
+        run: |
+          cd los
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/.ccache
+          ccache -M 8G
+          # Android 7.x 用 Jack 编译 Java，内存消耗大，需显式给堆
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4096m"
+          set +u
+          source build/envsetup.sh
+          lunch lineage_X18-userdebug
+          set -u
+          ./prebuilts/sdk/tools/jack-admin kill-server || true
+          ./prebuilts/sdk/tools/jack-admin start-server || true
+          mka ${{ github.event.inputs.build_target || 'bacon' }} -j"$(nproc)"
+
+      - name: Show output
+        if: always()
+        run: |
+          OUT=los/out/target/product/X18
+          echo "--- 产物 ---"
+          ls -lh "$OUT"/*.zip "$OUT"/*.img 2>/dev/null || echo "(无产物)"
+          if [ -f "$OUT/boot.img" ]; then
+            echo "--- boot.img 校验（确认用的是本机 prebuilt 内核）---"
+            python3 own/tools/verify_recovery.py "$OUT/boot.img" || true
+          fi
+          ccache -s | head -8 || true
+          df -h /
+
+      - name: Publish release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: los141-build-${{ github.run_number }}
+          name: LineageOS 14.1 for ios6737t (build ${{ github.run_number }})
+          files: |
+            los/out/target/product/X18/*.zip
+            los/out/target/product/X18/boot.img
+            los/out/target/product/X18/system.img
+          fail_on_unmatched_files: false
+          body: |
+            LineageOS 14.1 (Android 7.1)，为 MT6737T 机型 `ios6737t_36_a_n` 构建。
+
+            基于 [seluce/android_device_cubot_x18](https://github.com/seluce/android_device_cubot_x18)
+            （同为 MT6737T / kernel 3.18.35 / 32bit / density 320），叠加本机适配：
+
+            - 内核换成本机 prebuilt（含 `st7703` 屏驱动 + `gt1x` 触摸驱动）
+            - `ro.sf.hwrotation=180`（本机屏幕物理倒装）
+            - 分辨率 720x1498、system 分区 2625634304、本机实测 recovery.fstab
+            - OTA assert 追加本机机型名
+
+            **本次电话配置: `APPLY_TELEPHONY=${{ github.event.inputs.apply_telephony || '0' }}`**
+
+            ⚠️ 已知限制：vendor blobs 目前取自 Cubot X18。其 modem 固件是
+            `modem_1_lwg_n.img`（LTE/WCDMA/GSM，**无 C2K**），而本机是国行双基带
+            （MD1 + MD3/CDMA）。因此**通话与移动数据预期不可用**；相机传感器型号
+            也不同（本机 S5K3H2YX + OV5670），相机预期异常。这些需换用本机 blobs 修复。
+
+            刷入前请务必先用 TWRP 做完整备份。
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: los-build-logs
+          path: |
+            los/out/*.log
+            los/out/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
