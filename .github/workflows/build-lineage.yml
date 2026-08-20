@@ -216,11 +216,12 @@ jobs:
 
           # 上一次只设 OPENSSL_CONF 无效。curl 会自动读取 ~/.curlrc，
           # 这是不改 jack-admin 脚本就能覆盖其内部所有 curl 调用的注入点。
-          cat > "$HOME/.curlrc" <<'EOF'
-ciphers = DEFAULT@SECLEVEL=0
-tls-max = 1.2
-insecure
-EOF
+          # 用 printf 而非 heredoc —— heredoc 内容必须顶格，但那会低于
+          # YAML 块标量的缩进基准从而截断整个块（本文件已因此坏过一次）。
+          printf '%s\n' \
+            'ciphers = DEFAULT@SECLEVEL=0' \
+            'tls-max = 1.2' \
+            'insecure' > "$HOME/.curlrc"
           { echo "--- OpenSSL / curl 放宽配置 ---"
             echo "OPENSSL_CONF=$HOME/openssl-jack.cnf"
             echo "~/.curlrc:"; sed 's/^/    /' "$HOME/.curlrc"
