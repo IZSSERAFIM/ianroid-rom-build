@@ -418,6 +418,10 @@ jobs:
             $JA list-server 2>&1 | head -5 || echo "(服务器已死)"
             echo "--- 日志总行数: $(wc -l < /tmp/build.log) ---"
             echo; } | tee -a "$REPORT"
+          # 报告里的截取窗口总被超长的 ninja 命令行挤爆，索性把完整日志
+          # 压缩后一并作为 Release 资产发布，便于离线分析。
+          gzip -9 -c /tmp/build.log > "$GITHUB_WORKSPACE/build-log.txt.gz" || true
+          ls -lh "$GITHUB_WORKSPACE/build-log.txt.gz" || true
           exit $rc
 
       - name: Collect results
@@ -448,6 +452,7 @@ jobs:
           name: LineageOS 14.1 for ios6737t (build ${{ github.run_number }})
           files: |
             build-report.txt
+            build-log.txt.gz
             los/out/target/product/X18/*.zip
             los/out/target/product/X18/boot.img
             los/out/target/product/X18/system.img
