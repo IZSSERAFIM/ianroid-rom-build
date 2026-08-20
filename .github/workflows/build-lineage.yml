@@ -274,19 +274,51 @@ jobs:
           set -u
 
           TARGET="${{ github.event.inputs.build_target || 'bacon' }}"
-          echo "开始构建 target=$TARGET  $(date -u +%H:%M:%S)" | tee -a "$REPORT"
+          JA=./prebuilts/sdk/tools/jack-admin
 
-          # 直接调 make：mka 经 mk_timer -> schedtool -> ionice 多层包装，
-          # 任何一层异常都会被吞掉，不利于定位。
-          set +e
-          make -j"$(nproc)" "$TARGET" > /tmp/build.log 2>&1
-          rc=$?
-          set -e
-          echo "make 退出码: $rc  结束 $(date -u +%H:%M:%S)" | tee -a "$REPORT"
+          # Jack 服务器在长时间构建中掉线是 Android 7.x 的老毛病，
+          # 表现为 ninja 报 FAILED: [code=47] setup-jack-server
+          # （该码来自 AOSP 构建脚本里的 `jack-admin start-server || exit 47`）。
+          # out/ 与 ccache 都在，增量重试很便宜，所以失败就重启 Jack 再来一次。
+          rc=1
+          for attempt in 1 2 3; do
+            echo "===== 构建尝试 $attempt/3  target=$TARGET  $(date -u +%H:%M:%S) =====" | tee -a "$REPORT"
+            if [ $attempt -gt 1 ]; then
+              set +e
+              $JA kill-server  > /dev/null 2>&1
+              sleep 3
+              $JA start-server > /tmp/jack_restart.log 2>&1
+              echo "重启 Jack rc=$?" | tee -a "$REPORT"
+              sleep 5
+              set -e
+            fi
+            set +e
+            make -j"$(nproc)" "$TARGET" > /tmp/build.log 2>&1
+            rc=$?
+            set -e
+            echo "make 退出码: $rc  $(date -u +%H:%M:%S)" | tee -a "$REPORT"
+            [ $rc -eq 0 ] && break
+            # 只有 Jack 掉线才值得重试；真正的编译错误重试也没用
+            grep -q 'setup-jack-server' /tmp/build.log || {
+              echo "非 Jack 故障，不再重试" | tee -a "$REPORT"; break; }
+          done
+
           { echo "--- 错误摘要 ---"
-            grep -aE "(^|[^-])error:|^FAILED|^ninja: |^make: \*\*\*|Killed|No space left" /tmp/build.log \
-              | grep -avE "^prebuilts/|clang\+\+|-Werror|-Wno-" | head -40 || echo "(未匹配到错误行)"
-            echo "--- 输出末尾 40 行 ---"; tail -40 /tmp/build.log
+            grep -aE "(^|[^-])error:|^FAILED|^ninja: error|^make: \*\*\*|Killed|No space left" /tmp/build.log \
+              | grep -avE "^prebuilts/|clang\+\+|-Werror|-Wno-" | head -30 || echo "(无)"
+            echo "--- FAILED 前后各 15 行 ---"
+            grep -an "^FAILED" /tmp/build.log | head -3 | cut -d: -f1 | while read -r n; do
+              sed -n "$((n>15?n-15:1)),$((n+15))p" /tmp/build.log
+              echo "  ......"
+            done
+            echo "--- Jack 服务端日志 ---"
+            $JA server-log 2>&1 | tail -40 || echo "(取不到)"
+            ls -la ~/.jack-server/logs/ 2>/dev/null | head -10 || true
+            for f in ~/.jack-server/logs/*.log; do
+              [ -f "$f" ] && { echo "== $f =="; tail -25 "$f"; }
+            done 2>/dev/null || true
+            echo "--- Jack 存活检查 ---"
+            $JA list-server 2>&1 | head -5 || echo "(服务器已死)"
             echo "--- 日志总行数: $(wc -l < /tmp/build.log) ---"
             echo; } | tee -a "$REPORT"
           exit $rc
