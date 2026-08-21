@@ -358,6 +358,43 @@ jobs:
             ./prebuilts/sdk/tools/jack-admin list-server 2>&1 | head -5 || true
             echo; } | tee -a "$REPORT"
 
+      # 构建到 90% 时死在 WebView 的 APK 签名上：
+      #   java.util.zip.ZipException: error in opening zip file (SignApk)
+      # external/chromium-webview 里放的是几十 MB 的预编译 APK，
+      # 浅克隆(--depth=1 --no-clone-bundle)容易把它取成损坏或占位文件。
+      # 这里逐个校验，坏了就把该仓库单独完整重取。
+      - name: Verify and repair WebView prebuilt
+        run: |
+          cd los
+          WV=external/chromium-webview
+          { echo "--- WebView 预编译校验 ---"
+            if [ ! -d "$WV" ]; then echo "!! $WV 不存在"; else
+              ls -lh "$WV"/prebuilt/*/*.apk 2>/dev/null || echo "(未找到 apk)"
+              bad=0
+              for f in "$WV"/prebuilt/*/*.apk; do
+                [ -f "$f" ] || continue
+                if unzip -tqq "$f" >/dev/null 2>&1; then
+                  echo "  OK   $f  ($(stat -c%s "$f") bytes)"
+                else
+                  echo "  损坏 $f  ($(stat -c%s "$f") bytes)  头部: $(head -c 16 "$f" | od -An -c | tr -s ' ')"
+                  bad=1
+                fi
+              done
+              if [ "$bad" = "1" ] || [ -z "$(ls "$WV"/prebuilt/*/*.apk 2>/dev/null)" ]; then
+                echo "  -> 完整重取 $WV"
+                rm -rf "$WV"
+                git clone --depth=1 https://github.com/LineageOS/android_external_chromium-webview \
+                  -b cm-14.1 "$WV" 2>&1 | tail -5
+                for f in "$WV"/prebuilt/*/*.apk; do
+                  [ -f "$f" ] || continue
+                  unzip -tqq "$f" >/dev/null 2>&1 \
+                    && echo "  重取后 OK   $f ($(stat -c%s "$f") bytes)" \
+                    || echo "  重取后仍坏 $f"
+                done
+              fi
+            fi
+            echo; } | tee -a "$REPORT"
+
       - name: Build
         run: |
           cd los
