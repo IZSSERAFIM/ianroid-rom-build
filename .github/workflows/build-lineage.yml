@@ -92,7 +92,7 @@ jobs:
             git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
             lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev \
             libssl-dev libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush \
-            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python2 \
+            rsync schedtool squashfs-tools xsltproc zip unzip zlib1g-dev python2 \
             python3 openssl libelf-dev
           sudo ln -sf /usr/bin/python2 /usr/local/bin/python
           { echo "--- 环境 ---"; python --version 2>&1; java -version 2>&1;
@@ -365,6 +365,7 @@ jobs:
       # 这里逐个校验，坏了就把该仓库单独完整重取。
       - name: Verify and repair WebView prebuilt
         run: |
+          set +e   # 这一步是尽力修复，不应因单条探测命令非零而中止整个构建
           cd los
           WV=external/chromium-webview
           { echo "--- WebView 预编译校验 ---"
