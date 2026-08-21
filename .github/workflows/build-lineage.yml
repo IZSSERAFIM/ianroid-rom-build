@@ -397,6 +397,29 @@ jobs:
               sleep 5
               set -e
             fi
+
+            # cm-14.1 上 org.cyanogenmod.platform.internal 会直接引用
+            # org.cyanogenmod.platform-res 生成的 Manifest.java，却没有对该模块
+            # 建立 ninja 依赖，导致 -res 从未被调度、编到 34% 时 javac 找不到文件。
+            # 先把 -res 单独编出来，把生成产物落地。
+            if [ $attempt -eq 1 ]; then
+              set +e
+              make -j"$(nproc)" org.cyanogenmod.platform-res > /tmp/prebuild.log 2>&1
+              pre_rc=$?
+              set -e
+              echo "预编译 org.cyanogenmod.platform-res rc=$pre_rc" | tee -a "$REPORT"
+              { echo "--- 预编译输出末尾 ---"
+                grep -aE "^FAILED|^ninja: error|error:|Manifest\.java" /tmp/prebuild.log | head -15 || true
+                tail -8 /tmp/prebuild.log; } | tee -a "$REPORT"
+              MF=out/target/common/obj/APPS/org.cyanogenmod.platform-res_intermediates/src/cyanogenmod/platform/Manifest.java
+              if [ -f "$MF" ]; then
+                echo "Manifest.java 已生成 ($(stat -c%s "$MF") bytes)" | tee -a "$REPORT"
+              else
+                echo "!! Manifest.java 仍未生成" | tee -a "$REPORT"
+                find out/target/common/obj/APPS/org.cyanogenmod.platform-res_intermediates -type f 2>/dev/null | head -10 | tee -a "$REPORT" || true
+              fi
+            fi
+
             set +e
             make -j"$(nproc)" "$TARGET" > /tmp/build.log 2>&1
             rc=$?
