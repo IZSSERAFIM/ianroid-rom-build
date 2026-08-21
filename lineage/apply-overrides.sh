@@ -73,9 +73,15 @@ sed -i 's/^TARGET_OTA_ASSERT_DEVICE :=.*/TARGET_OTA_ASSERT_DEVICE := CUBOT_X18,X
 say "OTA assert" "追加 iPhone,ios6737t (本机 ro.product.device=iPhone)"
 
 # ---------------------------------------------------------------- 分区表
-# 用本机实测 by-name 映射，已在 TWRP 里验证过能正确挂载全部分区
-cp -f "$OWN/device/recovery.fstab" "$DEV/rootdir/recovery.fstab"
-say "recovery.fstab" "已替换为本机实测分区表"
+# 用本机实测 by-name 映射，已在 TWRP 里验证过能正确挂载全部分区。
+#
+# 但必须去掉 flags=display="...";backup=1 这类 TWRP 专有列：
+# AOSP 打包阶段的 build/tools/releasetools/common.py LoadRecoveryFSTab
+# 解析不了它们，会在构建 99% 时抛
+#   ValueError: malformed recovery.fstab line
+# 去掉 flags 后的格式(挂载点 类型 设备 [设备2])两边都能解析。
+sed -E 's/[[:space:]]+flags=.*$//' "$OWN/device/recovery.fstab" > "$DEV/rootdir/recovery.fstab"
+say "recovery.fstab" "已替换为本机分区表（去掉 TWRP 专有 flags 列）"
 
 # ---------------------------------------------------------------- 电话
 if [ "$APPLY_TELEPHONY" = "1" ]; then
