@@ -73,15 +73,15 @@ sed -i 's/^TARGET_OTA_ASSERT_DEVICE :=.*/TARGET_OTA_ASSERT_DEVICE := CUBOT_X18,X
 say "OTA assert" "追加 iPhone,ios6737t (本机 ro.product.device=iPhone)"
 
 # ---------------------------------------------------------------- 分区表
-# 用本机实测 by-name 映射，已在 TWRP 里验证过能正确挂载全部分区。
-#
-# 但必须去掉 flags=display="...";backup=1 这类 TWRP 专有列：
-# AOSP 打包阶段的 build/tools/releasetools/common.py LoadRecoveryFSTab
-# 解析不了它们，会在构建 99% 时抛
+# ROM 构建必须用 AOSP fs_mgr v2 格式（每行恰好 5 列）。
+# 同目录下那份 TWRP 用的 recovery.fstab 是「挂载点 类型 设备 flags=...」格式，
+# 早先直接套用导致构建在 99% 的打包阶段抛
 #   ValueError: malformed recovery.fstab line
-# 去掉 flags 后的格式(挂载点 类型 设备 [设备2])两边都能解析。
-sed -E 's/[[:space:]]+flags=.*$//' "$OWN/device/recovery.fstab" > "$DEV/rootdir/recovery.fstab"
-say "recovery.fstab" "已替换为本机分区表（去掉 TWRP 专有 flags 列）"
+# 去掉 flags 列也不行 —— 3 列同样不满足 v2 的 5 列要求。
+cp -f "$OWN/device/recovery.fstab.aosp" "$DEV/rootdir/recovery.fstab"
+NCOL=$(grep -v '^#' "$DEV/rootdir/recovery.fstab" | grep -v '^$' | awk 'NF!=5' | wc -l)
+say "recovery.fstab" "已换为 AOSP v2 格式（非 5 列的行: $NCOL，应为 0）"
+[ "$NCOL" -eq 0 ] || { echo "!! fstab 列数不合规，构建必然在打包阶段失败"; exit 1; }
 
 # ---------------------------------------------------------------- 电话
 if [ "$APPLY_TELEPHONY" = "1" ]; then
