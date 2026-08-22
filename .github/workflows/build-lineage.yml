@@ -16,7 +16,7 @@ on:
       apply_telephony:
         description: "套用本机国行双基带电话配置(需搭配本机 blobs，否则 RIL 可能崩)"
         required: true
-        default: "0"
+        default: "1"
       build_target:
         description: "构建目标 (bacon / systemimage)"
         required: true
@@ -63,7 +63,7 @@ jobs:
             echo "commit     : ${{ github.sha }}"
             echo "runner     : ${{ github.event.inputs.runner || 'ubuntu-22.04' }}"
             echo "target     : ${{ github.event.inputs.build_target || 'bacon' }}"
-            echo "telephony  : ${{ github.event.inputs.apply_telephony || '0' }}"
+            echo "telephony  : ${{ github.event.inputs.apply_telephony || '1' }}"
             echo
           } | tee "$REPORT"
 
@@ -138,10 +138,39 @@ jobs:
             -b los-14.1 device/CUBOT/X18
           git clone --depth=1 https://github.com/seluce/android_vendor_cubot_x18 \
             -b los-14.1 vendor/CUBOT/X18
-          { echo "--- 设备树与 blobs ---"
+          { echo "--- 上游设备树与 blobs ---"
             echo "device 文件: $(ls device/CUBOT/X18 | tr '\n' ' ')"
-            echo "vendor blobs: $(find vendor/CUBOT/X18 -type f | wc -l) 个, $(du -sh vendor/CUBOT/X18 | cut -f1)"
+            echo "上游 vendor: $(find vendor/CUBOT/X18 -type f | wc -l) 个, $(du -sh vendor/CUBOT/X18 | cut -f1)"
             echo; } | tee -a "$REPORT"
+
+      # 上一版 ROM 卡在开机第一屏无限重启，根因是用了 Cubot X18 的 blobs：
+      # 其 HAL 命名为 *.mt6735t.so，而本机 ro.board.platform=mt6737t，
+      # HAL 实际叫 *.mt6737t.so —— 名字对不上，Android 加载不到，服务起不来。
+      # 这里整棵换成从本机 stock system.img 提取的真实 blobs。
+      - name: Replace vendor blobs with the device's own
+        run: |
+          cd los
+          rm -rf vendor/CUBOT/X18
+          mkdir -p vendor/CUBOT/X18
+          cp -r ../own/vendor_blobs/. vendor/CUBOT/X18/
+          { echo "--- 换用本机 blobs ---"
+            echo "文件数: $(find vendor/CUBOT/X18 -type f | wc -l)"
+            echo "大小:   $(du -sh vendor/CUBOT/X18 | cut -f1)"
+            echo "HAL 模块:"
+            ls vendor/CUBOT/X18/vendor/lib/hw/ 2>/dev/null | sed 's/^/  /'
+            echo "modem 固件:"
+            ls vendor/CUBOT/X18/vendor/firmware/ 2>/dev/null | grep -E '^modem' | sed 's/^/  /'
+            echo "vendor.mk 条目数: $(grep -c 'vendor/CUBOT/X18/' vendor/CUBOT/X18/X18-vendor.mk || echo 0)"
+            echo; } | tee -a "$REPORT"
+          # 关键 HAL 必须在，否则构出来的 ROM 一定起不来
+          for f in camera.mt6737t.so sensors.mt6737t.so gralloc.mt6737t.so \
+                   hwcomposer.mt6735.so audio.primary.mt6737t.so; do
+            [ -s "vendor/CUBOT/X18/vendor/lib/hw/$f" ] || {
+              echo "!! 缺少关键 HAL $f" | tee -a "$REPORT"; exit 1; }
+          done
+          [ -s vendor/CUBOT/X18/vendor/lib/egl/libGLES_mali.so ] || {
+            echo "!! 缺少 Mali 驱动" | tee -a "$REPORT"; exit 1; }
+          echo "关键 HAL 与 Mali 驱动齐全" | tee -a "$REPORT"
 
       - name: Apply MTK patches
         run: |
@@ -160,7 +189,7 @@ jobs:
 
       - name: Apply our device overrides
         env:
-          APPLY_TELEPHONY: ${{ github.event.inputs.apply_telephony || '0' }}
+          APPLY_TELEPHONY: ${{ github.event.inputs.apply_telephony || '1' }}
         run: |
           chmod +x own/lineage/apply-overrides.sh
           echo "--- 本机适配 ---" | tee -a "$REPORT"
