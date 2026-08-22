@@ -1,12 +1,26 @@
 # 由 gen_vendor_mk.py 依据本机 stock system.img 提取的 blobs 生成。
-# 只包含 vendor/ 下的真实二进制与固件；构建脚本(Android.mk 等)不在此列。
+# 覆盖 vendor/ lib/ etc/ usr/ 四棵子树；构建脚本(Android.mk 等)不在此列。
 #
-# 与上游 Cubot X18 vendor 树的关键差异：
-#   - 本机 HAL 命名为 *.mt6737t.so（对应 ro.board.platform=mt6737t），
-#     而非 X18 的 *.mt6735t.so —— 名字对不上会导致 HAL 加载失败、开机循环
+# 关键点：
+#   - HAL 命名为 *.mt6737t.so，对应本机 ro.board.platform=mt6737t
+#     （X18 的是 *.mt6735t.so，名字对不上会导致 HAL 加载失败、开机循环）
+#   - lib/libfs_mgr.so 与 lib/libcurl.so 必须包含：LineageOS 把 libfs_mgr
+#     编为静态库、不产出 .so，而 MTK 的 audioserver / dm_agent_binder /
+#     nvram_agent_binder / mnld 是动态链接它们的，缺失会使这些进程崩溃，
+#     进而拖垮 zygote（实测上一次开机就卡在 zygote 反复重启）
 #   - 含本机专有的 C2K 基带固件 modem_3_3g_n.img 与 libc2kril.so
 
 PRODUCT_COPY_FILES += \
+    vendor/CUBOT/X18/etc/wifi/p2p_supplicant_overlay.conf:system/etc/wifi/p2p_supplicant_overlay.conf \
+    vendor/CUBOT/X18/etc/wifi/wpa_supplicant.conf:system/etc/wifi/wpa_supplicant.conf \
+    vendor/CUBOT/X18/etc/wifi/wpa_supplicant_overlay.conf:system/etc/wifi/wpa_supplicant_overlay.conf \
+    vendor/CUBOT/X18/lib/liba3m.so:system/lib/liba3m.so \
+    vendor/CUBOT/X18/lib/libaudio-resampler.so:system/lib/libaudio-resampler.so \
+    vendor/CUBOT/X18/lib/libcurl.so:system/lib/libcurl.so \
+    vendor/CUBOT/X18/lib/libfs_mgr.so:system/lib/libfs_mgr.so \
+    vendor/CUBOT/X18/lib/libwebrtc_audio_preprocessing.so:system/lib/libwebrtc_audio_preprocessing.so \
+    vendor/CUBOT/X18/usr/keylayout/ACCDET.kl:system/usr/keylayout/ACCDET.kl \
+    vendor/CUBOT/X18/usr/keylayout/mtk-kpd.kl:system/usr/keylayout/mtk-kpd.kl \
     vendor/CUBOT/X18/vendor/bin/MtkCodecService:system/vendor/bin/MtkCodecService \
     vendor/CUBOT/X18/vendor/bin/aal:system/vendor/bin/aal \
     vendor/CUBOT/X18/vendor/bin/aee:system/vendor/bin/aee \

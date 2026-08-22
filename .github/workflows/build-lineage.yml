@@ -159,8 +159,10 @@ jobs:
           #   libstagefright_color_conversion/ —— 构建期用的 .a 静态库，
           #     ROM 里本来就不存在，无法从本机 system.img 提取
           rm -rf "$V/vendor" "$V/lib" "$V/bin" "$V/etc" "$V/usr" "$V/X18-vendor.mk"
-          cp -r ../own/vendor_blobs/vendor "$V/"
-          cp    ../own/vendor_blobs/X18-vendor.mk "$V/"
+          for d in vendor lib etc usr; do
+            [ -d "../own/vendor_blobs/$d" ] && cp -r "../own/vendor_blobs/$d" "$V/"
+          done
+          cp ../own/vendor_blobs/X18-vendor.mk "$V/"
           { echo "--- 换用本机 blobs ---"
             echo "文件数: $(find $V -type f | wc -l)"
             echo "大小:   $(du -sh $V | cut -f1)"
@@ -187,8 +189,17 @@ jobs:
             [ -s "$V/vendor/lib/$f" ] || {
               echo "!! 预编译模块源文件缺失 $f" | tee -a "$REPORT"; exit 1; }
           done
+          # LineageOS 把 libfs_mgr 编为静态库、不产出 .so，而 MTK 的
+          # audioserver / dm_agent_binder / nvram_agent_binder 动态链接它；
+          # libcurl.so 则是 mnld(GPS 守护)所需。上一次开机正是因为缺这两个，
+          # 导致 audioserver 无法链接 -> zygote 反复重启。
+          for f in libfs_mgr.so libcurl.so; do
+            [ -s "$V/lib/$f" ] || {
+              echo "!! 缺少 lib/$f —— 会导致 audioserver/mnld 崩溃、zygote 循环重启" | tee -a "$REPORT"
+              exit 1; }
+          done
           [ -f "$V/Android.mk" ] || { echo "!! 上游 Android.mk 丢失" | tee -a "$REPORT"; exit 1; }
-          echo "关键 HAL、Mali 驱动、预编译模块源文件均齐全" | tee -a "$REPORT"
+          echo "关键 HAL、Mali 驱动、预编译模块源文件、libfs_mgr/libcurl 均齐全" | tee -a "$REPORT"
 
       - name: Apply MTK patches
         run: |
