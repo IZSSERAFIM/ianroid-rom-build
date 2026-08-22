@@ -164,14 +164,15 @@ jobs:
             echo "文件数: $(find $V -type f | wc -l)"
             echo "大小:   $(du -sh $V | cut -f1)"
             echo "保留的上游文件:"
-            ls "$V"/Android.mk "$V"/BoardConfigVendor.mk 2>/dev/null | sed 's/^/  /'
-            ls -d "$V"/libstagefright_color_conversion 2>/dev/null | sed 's/^/  /'
+            for f in Android.mk BoardConfigVendor.mk README libstagefright_color_conversion; do
+              [ -e "$V/$f" ] && echo "  有 $f" || echo "  无 $f"
+            done
             echo "HAL 模块:"
-            ls "$V"/vendor/lib/hw/ 2>/dev/null | sed 's/^/  /'
+            ls "$V"/vendor/lib/hw/ 2>/dev/null | sed 's/^/  /' || echo "  (读取失败)"
             echo "modem 固件:"
-            ls "$V"/vendor/firmware/ 2>/dev/null | grep -E '^modem' | sed 's/^/  /'
-            echo "vendor.mk 条目数: $(grep -c 'vendor/CUBOT/X18/' $V/X18-vendor.mk || echo 0)"
-            echo; } | tee -a "$REPORT"
+            ls "$V"/vendor/firmware/ 2>/dev/null | grep -E '^modem' | sed 's/^/  /' || echo "  (无)"
+            echo "vendor.mk 条目数: $(grep -c 'vendor/CUBOT/X18/' "$V/X18-vendor.mk" 2>/dev/null || echo 0)"
+            echo; } 2>&1 | tee -a "$REPORT" || true
           # 关键 HAL 必须在，否则构出来的 ROM 一定起不来
           for f in camera.mt6737t.so sensors.mt6737t.so gralloc.mt6737t.so \
                    hwcomposer.mt6735.so audio.primary.mt6737t.so; do
