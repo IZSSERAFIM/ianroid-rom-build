@@ -29,6 +29,7 @@ on:
     branches: [main]
     paths:
       - "lineage/**"
+      - "vendor_blobs/X18-vendor.mk"
       - ".github/workflows/build-lineage.yml"
 
 jobs:
