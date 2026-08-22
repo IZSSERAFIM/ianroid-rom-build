@@ -1,0 +1,3 @@
+Vendor blobs extracted from the device own stock system.img
+(ios6737t_36_a_n / MT6737T), NOT from Cubot X18.
+HAL naming is *.mt6737t.so to match ro.board.platform=mt6737t.

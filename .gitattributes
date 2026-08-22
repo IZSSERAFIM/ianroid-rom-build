@@ -6,3 +6,6 @@
 *.fstab     text eol=lf
 Android.mk  text eol=lf
 kernel      binary
+
+# vendor blobs 是二进制，禁止任何行尾转换
+vendor_blobs/**  binary
