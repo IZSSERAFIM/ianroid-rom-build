@@ -1,14 +1,12 @@
 # 由 gen_vendor_mk.py 依据本机 stock system.img 提取的 blobs 生成。
+# 只包含 vendor/ 下的真实二进制与固件；构建脚本(Android.mk 等)不在此列。
+#
 # 与上游 Cubot X18 vendor 树的关键差异：
-#   - 本机 blobs 位于 /system/vendor/ 下，HAL 命名为 *.mt6737t.so
-#     （对应 ro.board.platform=mt6737t），而非 X18 的 *.mt6735t.so
+#   - 本机 HAL 命名为 *.mt6737t.so（对应 ro.board.platform=mt6737t），
+#     而非 X18 的 *.mt6735t.so —— 名字对不上会导致 HAL 加载失败、开机循环
 #   - 含本机专有的 C2K 基带固件 modem_3_3g_n.img 与 libc2kril.so
 
 PRODUCT_COPY_FILES += \
-    vendor/CUBOT/X18/Android.mk:system/Android.mk \
-    vendor/CUBOT/X18/BoardConfigVendor.mk:system/BoardConfigVendor.mk \
-    vendor/CUBOT/X18/README:system/README \
-    vendor/CUBOT/X18/X18-vendor.mk:system/X18-vendor.mk \
     vendor/CUBOT/X18/vendor/bin/MtkCodecService:system/vendor/bin/MtkCodecService \
     vendor/CUBOT/X18/vendor/bin/aal:system/vendor/bin/aal \
     vendor/CUBOT/X18/vendor/bin/aee:system/vendor/bin/aee \
