@@ -150,27 +150,43 @@ jobs:
       - name: Replace vendor blobs with the device's own
         run: |
           cd los
-          rm -rf vendor/CUBOT/X18
-          mkdir -p vendor/CUBOT/X18
-          cp -r ../own/vendor_blobs/. vendor/CUBOT/X18/
+          V=vendor/CUBOT/X18
+          # 只替换 blob 文件本身，保留上游的两样东西：
+          #   Android.mk —— 把 libdpframework / libaudiocustparam / libmtkcam_fwkutils
+          #     声明为预编译 SHARED_LIBRARIES，否则 libstagefright 之类链接不到，
+          #     构建会报 "export_includes ... missing and no known rule to make it"
+          #   libstagefright_color_conversion/ —— 构建期用的 .a 静态库，
+          #     ROM 里本来就不存在，无法从本机 system.img 提取
+          rm -rf "$V/vendor" "$V/lib" "$V/bin" "$V/etc" "$V/usr" "$V/X18-vendor.mk"
+          cp -r ../own/vendor_blobs/vendor "$V/"
+          cp    ../own/vendor_blobs/X18-vendor.mk "$V/"
           { echo "--- 换用本机 blobs ---"
-            echo "文件数: $(find vendor/CUBOT/X18 -type f | wc -l)"
-            echo "大小:   $(du -sh vendor/CUBOT/X18 | cut -f1)"
+            echo "文件数: $(find $V -type f | wc -l)"
+            echo "大小:   $(du -sh $V | cut -f1)"
+            echo "保留的上游文件:"
+            ls "$V"/Android.mk "$V"/BoardConfigVendor.mk 2>/dev/null | sed 's/^/  /'
+            ls -d "$V"/libstagefright_color_conversion 2>/dev/null | sed 's/^/  /'
             echo "HAL 模块:"
-            ls vendor/CUBOT/X18/vendor/lib/hw/ 2>/dev/null | sed 's/^/  /'
+            ls "$V"/vendor/lib/hw/ 2>/dev/null | sed 's/^/  /'
             echo "modem 固件:"
-            ls vendor/CUBOT/X18/vendor/firmware/ 2>/dev/null | grep -E '^modem' | sed 's/^/  /'
-            echo "vendor.mk 条目数: $(grep -c 'vendor/CUBOT/X18/' vendor/CUBOT/X18/X18-vendor.mk || echo 0)"
+            ls "$V"/vendor/firmware/ 2>/dev/null | grep -E '^modem' | sed 's/^/  /'
+            echo "vendor.mk 条目数: $(grep -c 'vendor/CUBOT/X18/' $V/X18-vendor.mk || echo 0)"
             echo; } | tee -a "$REPORT"
           # 关键 HAL 必须在，否则构出来的 ROM 一定起不来
           for f in camera.mt6737t.so sensors.mt6737t.so gralloc.mt6737t.so \
                    hwcomposer.mt6735.so audio.primary.mt6737t.so; do
-            [ -s "vendor/CUBOT/X18/vendor/lib/hw/$f" ] || {
+            [ -s "$V/vendor/lib/hw/$f" ] || {
               echo "!! 缺少关键 HAL $f" | tee -a "$REPORT"; exit 1; }
           done
-          [ -s vendor/CUBOT/X18/vendor/lib/egl/libGLES_mali.so ] || {
+          [ -s "$V/vendor/lib/egl/libGLES_mali.so" ] || {
             echo "!! 缺少 Mali 驱动" | tee -a "$REPORT"; exit 1; }
-          echo "关键 HAL 与 Mali 驱动齐全" | tee -a "$REPORT"
+          # 上游 Android.mk 声明的预编译模块，其源文件必须存在
+          for f in libdpframework.so libaudiocustparam.so libmtkcam_fwkutils.so; do
+            [ -s "$V/vendor/lib/$f" ] || {
+              echo "!! 预编译模块源文件缺失 $f" | tee -a "$REPORT"; exit 1; }
+          done
+          [ -f "$V/Android.mk" ] || { echo "!! 上游 Android.mk 丢失" | tee -a "$REPORT"; exit 1; }
+          echo "关键 HAL、Mali 驱动、预编译模块源文件均齐全" | tee -a "$REPORT"
 
       - name: Apply MTK patches
         run: |
